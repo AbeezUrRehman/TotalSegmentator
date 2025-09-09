@@ -79,8 +79,13 @@ def main():
     parser.add_argument("--device", default="auto",
                         help="Device: auto|cpu|mps|cuda|cuda:N|gpu|gpu:N")
     parser.add_argument("--robust_crop", action="store_true", help="Use robust crop models")
-    parser.add_argument("--min_component_size", type=int, default=40,
-                        help="Min vessel component size to retain in enhancement")
+    parser.add_argument("--min_component_size", type=int, default=20,
+                        help="Min vessel component size to retain in enhancement (reduced default for better sensitivity)")
+    parser.add_argument("--vessel_hu_range", nargs=2, type=int, default=[30, 200], 
+                        metavar=('MIN_HU', 'MAX_HU'),
+                        help="HU range for contrast-enhanced vessels (default: 30 200)")
+    parser.add_argument("--enhancement_iterations", type=int, default=2,
+                        help="Number of morphological enhancement iterations (default: 2)")
     parser.add_argument("--no_fallback_full_liver", action="store_true",
                         help="Disable full-volume fallback if liver mask missing")
 
@@ -194,7 +199,9 @@ def main():
             liver_mask_path=liver_mask_path if (liver_mask_path and liver_mask_path.exists()) else None,
             device=backend_device,
             allow_fallback_full_liver=not args.no_fallback_full_liver,
-            min_component_size=args.min_component_size
+            min_component_size=args.min_component_size,
+            vessel_hu_range=tuple(args.vessel_hu_range),
+            enhancement_iterations=args.enhancement_iterations
         )
         print(f"✅ Enhanced vessels saved: {enhanced_out}")
 

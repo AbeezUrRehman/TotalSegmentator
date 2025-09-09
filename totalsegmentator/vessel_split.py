@@ -173,29 +173,61 @@ def split_portal_hepatic(
             dist_ivc = ndimage.distance_transform_edt(inv, sampling=zooms)
             hepatic_seed = ((dist_ivc <= ivc_distance_mm) & vessels & liver).astype(np.uint8)
 
-    # ---------------- Fallback Seeds (geometric) ---------------- #
+    # ---------------- Enhanced Seeds with Morphological Operations ---------------- #
+
+    # Improve portal seed region
+    if portal_seed.sum() > 0:
+        # Dilate portal seed to capture more of the portal tree
+        portal_seed = ndimage.binary_dilation(portal_seed, iterations=2).astype(np.uint8)
+        # Ensure it stays within vessels and liver
+        portal_seed = (portal_seed & vessels & liver).astype(np.uint8)
+    
+    # Improve hepatic seed region  
+    if hepatic_seed.sum() > 0:
+        # Dilate hepatic seed to capture more of the hepatic tree
+        hepatic_seed = ndimage.binary_dilation(hepatic_seed, iterations=2).astype(np.uint8)
+        # Ensure it stays within vessels and liver
+        hepatic_seed = (hepatic_seed & vessels & liver).astype(np.uint8)
+
+    # ---------------- Improved Fallback Seeds (geometric) ---------------- #
 
     if portal_seed.sum() == 0:
         coords = np.argwhere(vessels)
         if coords.size:
-            z_cut = np.percentile(coords[:, 2], 40)
+            # More sophisticated portal seed selection
+            # Use inferior-central region (where portal vein typically enters liver)
+            z_center = np.percentile(coords[:, 2], 50)
+            z_cut = np.percentile(coords[:, 2], 35)  # Lower third for portal entry
+            
+            # Select voxels in the lower-central region
             subset = coords[coords[:, 2] <= z_cut]
             if subset.size:
+                # Find centroid of this region
                 center = subset.mean(axis=0)
+                # Select voxels within reasonable distance from centroid
                 dist = np.sqrt(((coords - center) ** 2).sum(1))
-                sel = coords[dist < np.percentile(dist, 15)]
-                portal_seed[tuple(sel.T)] = 1
+                percentile_thresh = min(20, 100 * len(coords[dist < np.percentile(dist, 20)]) / len(coords))
+                sel = coords[dist < np.percentile(dist, percentile_thresh)]
+                if len(sel) > 5:  # Ensure minimum seed size
+                    portal_seed[tuple(sel.T)] = 1
 
     if hepatic_seed.sum() == 0:
         coords = np.argwhere(vessels)
         if coords.size:
-            z_cut = np.percentile(coords[:, 2], 70)
+            # More sophisticated hepatic seed selection
+            # Use superior-peripheral region (where hepatic veins drain)
+            z_cut = np.percentile(coords[:, 2], 75)  # Upper quarter for hepatic outflow
+            
+            # Select voxels in the upper region
             subset = coords[coords[:, 2] >= z_cut]
             if subset.size:
+                # Find multiple centers for hepatic veins (typically 3 main hepatic veins)
                 center = subset.mean(axis=0)
                 dist = np.sqrt(((coords - center) ** 2).sum(1))
-                sel = coords[dist < np.percentile(dist, 20)]
-                hepatic_seed[tuple(sel.T)] = 1
+                percentile_thresh = min(25, 100 * len(coords[dist < np.percentile(dist, 25)]) / len(coords))
+                sel = coords[dist < np.percentile(dist, percentile_thresh)]
+                if len(sel) > 5:  # Ensure minimum seed size  
+                    hepatic_seed[tuple(sel.T)] = 1
 
     # ---------------- Skeleton-assisted Labeling ---------------- #
 
@@ -267,19 +299,51 @@ def split_portal_hepatic(
         nib.save(nib.Nifti1Image(skel_labels, img_lv.affine, img_lv.header),
                  str(output_dir / "liver_vessels_skeleton_labeled.nii.gz"))
 
-    # ---------------- QC ---------------- #
+    # ---------------- Enhanced QC Metrics ---------------- #
 
     total_v = int(vessels.sum())
     portal_v = int(portal_mask.sum())
     hepatic_v = int(hepatic_mask.sum())
+    unlabeled_v = total_v - portal_v - hepatic_v
+    
+    # Calculate seed quality metrics
+    portal_seed_coverage = float(portal_seed.sum() / portal_v) if portal_v > 0 else 0.0
+    hepatic_seed_coverage = float(hepatic_seed.sum() / hepatic_v) if hepatic_v > 0 else 0.0
+    
+    # Calculate connectivity metrics
+    if portal_v > 0:
+        portal_components, n_portal = ndimage.label(portal_mask)
+        portal_largest = np.max(ndimage.sum(portal_mask, portal_components, range(1, n_portal + 1))) if n_portal > 0 else 0
+    else:
+        n_portal = 0
+        portal_largest = 0
+        
+    if hepatic_v > 0:
+        hepatic_components, n_hepatic = ndimage.label(hepatic_mask)
+        hepatic_largest = np.max(ndimage.sum(hepatic_mask, hepatic_components, range(1, n_hepatic + 1))) if n_hepatic > 0 else 0
+    else:
+        n_hepatic = 0
+        hepatic_largest = 0
+    
     qc = {
         "portal_voxels": portal_v,
         "hepatic_voxels": hepatic_v,
         "total_vessel_voxels": total_v,
+        "unlabeled_voxels": unlabeled_v,
         "portal_fraction": float(portal_v / total_v) if total_v else 0.0,
         "hepatic_fraction": float(hepatic_v / total_v) if total_v else 0.0,
+        "unlabeled_fraction": float(unlabeled_v / total_v) if total_v else 0.0,
         "portal_seed_voxels": int(portal_seed.sum()),
         "hepatic_seed_voxels": int(hepatic_seed.sum()),
-        "use_skeleton": bool(use_skel)
+        "portal_seed_coverage": portal_seed_coverage,
+        "hepatic_seed_coverage": hepatic_seed_coverage,
+        "portal_components": int(n_portal),
+        "hepatic_components": int(n_hepatic),
+        "portal_largest_component": int(portal_largest),
+        "hepatic_largest_component": int(hepatic_largest),
+        "portal_connectivity": float(portal_largest / portal_v) if portal_v > 0 else 0.0,
+        "hepatic_connectivity": float(hepatic_largest / hepatic_v) if hepatic_v > 0 else 0.0,
+        "use_skeleton": bool(use_skel),
+        "split_balance_score": 1.0 - abs(0.5 - (portal_v / total_v)) * 2 if total_v > 0 else 0.0  # 1.0 = perfect 50/50 split
     }
     return qc
