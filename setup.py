@@ -39,6 +39,10 @@ setup(name='TotalSegmentator',
             'dicom2nifti',
             'pyarrow'
         ],
+        extras_require={
+            'blender': ['vtk>=9.0.0'],  # For STL export and Blender integration
+            'stl': ['vtk>=9.0.0'],      # Alternative name for the same functionality
+        },
         zip_safe=False,
         classifiers=[
             'Intended Audience :: Science/Research',
@@ -58,7 +62,8 @@ setup(name='TotalSegmentator',
                 'totalseg_set_license=totalsegmentator.bin.totalseg_set_license:main',
                 'totalseg_get_phase=totalsegmentator.bin.totalseg_get_phase:main',
                 'totalseg_get_modality=totalsegmentator.bin.totalseg_get_modality:main',
-                'totalseg_evans_index=totalsegmentator.bin.totalseg_evans_index:main'
+                'totalseg_evans_index=totalsegmentator.bin.totalseg_evans_index:main',
+                'totalseg_process_liver=totalsegmentator.bin.totalseg_process_liver:main'
             ],
         },
     )

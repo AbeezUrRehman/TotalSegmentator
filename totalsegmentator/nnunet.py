@@ -48,6 +48,13 @@ from nnunetv2.utilities.file_path_utilities import get_output_folder
 from totalsegmentator.map_to_binary import class_map, class_map_5_parts, class_map_parts_mr, class_map_parts_headneck_muscles
 from totalsegmentator.map_to_binary import map_taskid_to_partname_mr, map_taskid_to_partname_ct, map_taskid_to_partname_headneck_muscles
 from totalsegmentator.alignment import as_closest_canonical_nifti, undo_canonical_nifti
+
+# Import blender export functionality
+try:
+    from totalsegmentator.blender_export import export_segmentations_to_stl, save_task_summary
+    BLENDER_EXPORT_AVAILABLE = True
+except ImportError:
+    BLENDER_EXPORT_AVAILABLE = False
 from totalsegmentator.alignment import as_closest_canonical, undo_canonical
 from totalsegmentator.resampling import change_spacing
 from totalsegmentator.libs import combine_masks, compress_nifti, check_if_shape_and_affine_identical, reorder_multilabel_like_v1
@@ -352,6 +359,9 @@ def nnUNet_predict_image(file_in: Union[str, Path, Nifti1Image], file_out, task_
 
     if img_type == "nifti" and output_type == "dicom":
         raise ValueError("To use output type dicom you also have to use a Dicom image as input.")
+    
+    if output_type == "stl" and not BLENDER_EXPORT_AVAILABLE:
+        raise ValueError("STL export requires VTK. Please install with: pip install vtk")
 
     if task_name == "total":
         class_map_parts = class_map_5_parts
@@ -734,6 +744,64 @@ def nnUNet_predict_image(file_in: Union[str, Path, Nifti1Image], file_out, task_
             if output_type == "dicom":
                 file_out.mkdir(exist_ok=True, parents=True)
                 save_mask_as_rtstruct(img_data, selected_classes, file_in_dcm, file_out / "segmentations.dcm")
+            elif output_type == "stl":
+                st = time.time()
+                file_out.mkdir(exist_ok=True, parents=True)
+                
+                # For STL export, we need to save individual binary masks first, then convert them
+                temp_nifti_dir = file_out / "temp_nifti"
+                temp_nifti_dir.mkdir(exist_ok=True)
+                
+                if not quiet: print("Creating temporary NIfTI files for STL conversion...")
+                
+                # Save individual binary masks as NIfTI files
+                converted_files = {}
+                for k, v in selected_classes.items():
+                    binary_img = img_data == k
+                    if binary_img.sum() > 0:  # Only save if mask is not empty
+                        temp_nifti_path = temp_nifti_dir / f"{v}.nii.gz"
+                        nib.save(nib.Nifti1Image(binary_img.astype(np.uint8), img_pred.affine, new_header), temp_nifti_path)
+                        converted_files[v] = str(temp_nifti_path)
+                
+                # Convert NIfTI files to STL
+                if not quiet: print("Converting segmentations to STL format...")
+                try:
+                    from totalsegmentator.blender_export import nifti_to_stl, generate_blender_import_script, save_task_summary
+                    
+                    stl_results = {}
+                    for organ_name, nifti_path in converted_files.items():
+                        stl_path = file_out / f"{organ_name}.stl"
+                        success = nifti_to_stl(nifti_path, stl_path, smoothing=10, reduction=0.9)
+                        stl_results[f"{organ_name}.stl"] = success
+                        
+                        if success and not quiet:
+                            print(f"  Created {organ_name}.stl")
+                    
+                    # Generate Blender import script
+                    generate_blender_import_script(file_out, file_out / "import_organs_blender.py")
+                    
+                    # Save task summary
+                    save_task_summary(file_out, task_name, stl_results)
+                    
+                    if not quiet: 
+                        successful = sum(stl_results.values())
+                        total = len(stl_results)
+                        print(f"  Successfully converted {successful}/{total} segmentations to STL")
+                    
+                except Exception as e:
+                    if not quiet: print(f"Error during STL conversion: {e}")
+                    # Fall back to saving NIfTI files
+                    if not quiet: print("Falling back to NIfTI format...")
+                    for k, v in selected_classes.items():
+                        binary_img = img_data == k
+                        output_path = str(file_out / f"{v}.nii.gz")
+                        nib.save(nib.Nifti1Image(binary_img.astype(np.uint8), img_pred.affine, new_header), output_path)
+                
+                # Clean up temporary files
+                try:
+                    shutil.rmtree(temp_nifti_dir)
+                except:
+                    pass
             else:
                 st = time.time()
                 if multilabel_image:
