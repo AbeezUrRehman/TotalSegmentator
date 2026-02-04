@@ -29,6 +29,7 @@ import shutil
 import webbrowser
 import json
 import platform
+import argparse
 
 # -----------------------------
 # Vessel label definitions
@@ -588,6 +589,7 @@ class PipelineThread(threading.Thread):
 
 
         # STEP 6: Apply materials
+        colored = out_blend_dir / f"{case_name}-colored.blend"
         if self.mode in ("all", "step6"):
             self.log("\n" + "="*60 + "\n")
             self.log("🎨 Step 6: Applying exact anatomical materials\n")
@@ -1028,7 +1030,7 @@ class App(b.Window):
                 bootstyle="info-outline",
                 command=lambda m=mode: self._start(m)
             )
-            run_frame.pack(fill=X, expand=NO, pady=(0, 20))
+            btn.pack(side=LEFT, fill=X, expand=YES, padx=2, ipady=6)
 
         # PROGRESS
         progress_frame = b.Frame(main_frame)
@@ -1182,6 +1184,13 @@ class App(b.Window):
                 bootstyle="secondary"
             )
             return
+        dicom_dir = self.e_dicom.get().strip()
+        out_root = self.e_out.get().strip()
+        
+        if not dicom_dir or not out_root:
+            Messagebox.show_error("Please select both DICOM and output folders.", "Missing Input")
+            return
+        
         cfg = {
             "dicom_dir": dicom_dir,
             "out_root": out_root,
@@ -1200,7 +1209,6 @@ class App(b.Window):
         self.pb['value'] = 0
         self._is_processing = True
         self.status_label.config(text="● Processing...", bootstyle="warning")
-        #self.pb.start()
         self.worker = PipelineThread(self.log_queue, cfg, mode=mode)
         self.worker.start()
         self.after(50, self._drain)
@@ -1248,6 +1256,46 @@ class App(b.Window):
             pass
         self.after(100, self._drain)
 
+
+def run_cli_mode(args):
+    """Run pipeline in CLI mode without GUI"""
+    if not args.dicom or not args.output:
+        print("Error: --dicom and --output are required in CLI mode", file=sys.stderr)
+        return 1
+    
+    cfg = {
+        "dicom_dir": args.dicom,
+        "out_root": args.output,
+        "case_name": args.case_name,
+        "scale": str(args.scale),
+        "blender_path": args.blender or "",
+        "dcm2niix_path": args.dcm2niix or "",
+        "tasks": "total_all",
+    }
+    
+    log_queue = queue.Queue()
+    
+    def print_log(msg):
+        if msg.startswith("__PROG__:"):
+            progress = msg.split(":", 1)[1]
+            print(f"Progress: {progress}%")
+        elif msg != "__DONE__":
+            print(msg, end="")
+    
+    worker = PipelineThread(log_queue, cfg, mode="all")
+    worker.start()
+    
+    while True:
+        try:
+            msg = log_queue.get(timeout=0.1)
+            if msg == "__DONE__":
+                break
+            print_log(msg)
+        except queue.Empty:
+            continue
+    
+    worker.join()
+    return worker.rc
 
 def main():
     parser = argparse.ArgumentParser(

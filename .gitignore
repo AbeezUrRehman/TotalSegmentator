@@ -36,3 +36,4 @@ dicom_slices
 node_modules
 **/*.dcm
 data/
+examples/
